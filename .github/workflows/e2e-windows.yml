@@ -161,7 +161,7 @@ jobs:
       # ── Run the headed installer + AHK helper ───────────────────────
       - name: Launch Hermes-Setup.exe and install it
         shell: pwsh
-        timeout-minutes: 5
+        timeout-minutes: 10
         env:
           HERMES_SETUP_DEV_REPO_ROOT: ${{ env.INSTALL_DIR }}
         run: |
@@ -204,15 +204,15 @@ jobs:
               -ArgumentList "$env:INSTALL_DIR\e2e\windows\install-hermes-desktop.ahk", "$PWD\ahk.log" -PassThru -NoNewWindow `
               -RedirectStandardOutput ahk-stdout.log -RedirectStandardError ahk-stderr.log
 
-            # Wait for AHK helper to finish
-            $ahkProc | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
+            # Wait for AHK helper to finish. can take a long time for installer!
+
+            $ahkProc | Wait-Process -Timeout (60 * 8) -ErrorAction SilentlyContinue
             if (-not $ahkProc.HasExited) {
               Write-Host "AHK helper is still running; stopping it"
               Stop-Process -Id $ahkProc.Id -Force -ErrorAction SilentlyContinue
             }
 
-            # Leave the installer running, with timeout
-            $proc | Wait-Process -Timeout 240 -ErrorAction SilentlyContinue
+            # Installer should have exited
             if ($proc.HasExited) {
               # TODO check exit code once we add exit code in installer
               $installerSuccess = $true
@@ -238,6 +238,10 @@ jobs:
               }
             }
             Write-Host "ffmpeg stopped"
+
+            if (-not $installerSuccess) {
+              throw "Installer did not exit after autohotkey script finished. Check installer logs!"
+            }
           }
 
       # ── Run Playwright against the installed binary ─────────────────
@@ -300,32 +304,7 @@ jobs:
 
           if ($x -ne $null -and $y -ne $null -and $w -ne $null -and $h -ne $null) {
             # Window border + 16px grid only over the window + axis labels
-            $grid = "drawbox=x=$x`:y=$y`:w=$w`:h=$h`:color=red@0.9:t=2,split=2[box][win];[win]crop=$w`:$h`:$x`:$y,drawgrid=w=16:h=16:t=1:c=red@0.4[grid];[box][grid]overlay=$x`:$y"
-
-            # Label the X and Y axes at 64px intervals
-            $labelStep = 16
-            $txt = "fontfile='C\:\\Windows\\Fonts\\arial.ttf':fontsize=8:fontcolor=white:box=1:boxcolor=black@1"
-            $labels = @()
-
-            for ($i = 0; $i * $labelStep -le $w; $i++) {
-              $val = $i * $labelStep
-              $lx = $x + $val
-              $ly = if ($y -ge 18) { $y - 18 } else { $y + 4 }
-              $labels += "drawtext=text='$val':$txt`:x=$lx`:y=$ly"
-            }
-
-            for ($j = 0; $j * $labelStep -le $h; $j++) {
-              $val = $j * $labelStep
-              $lx = if ($x -ge 40) { $x - 40 } else { $x + 4 }
-              $ly = $y + $val
-              $labels += "drawtext=text='$val':$txt`:x=$lx`:y=$ly"
-            }
-
-            if ($labels) {
-              $vf = "$grid,$($labels -join ','),$vf"
-            } else {
-              $vf = "$grid,$vf"
-            }
+            $grid = "drawbox=x=$x`:y=$y`:w=$w`:h=$h`:color=red@0.9:t=2,split=2[box][win];[win]crop=$w`:$h`:$x`:$y`:$y"
           }
 
           Write-Host "Overlay filter: $vf"
