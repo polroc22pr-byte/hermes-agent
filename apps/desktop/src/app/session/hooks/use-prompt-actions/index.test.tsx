@@ -46,6 +46,8 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 interface HarnessHandle {
   cancelRun: () => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
+  redirectPrompt: (text: string) => Promise<boolean>
+  /** @deprecated Use `redirectPrompt`. */
   steerPrompt: (text: string) => Promise<boolean>
   submitText: (text: string, options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }) => Promise<boolean>
 }
@@ -127,10 +129,11 @@ function Harness({
     onReady({
       cancelRun: actions.cancelRun,
       restoreToMessage: actions.restoreToMessage,
+      redirectPrompt: actions.redirectPrompt,
       steerPrompt: actions.steerPrompt,
       submitText: actions.submitText
     })
-  }, [actions.cancelRun, actions.restoreToMessage, actions.steerPrompt, actions.submitText, onReady])
+  }, [actions.cancelRun, actions.restoreToMessage, actions.redirectPrompt, actions.steerPrompt, actions.submitText, onReady])
 
   return null
 }
@@ -612,32 +615,41 @@ describe('usePromptActions submit / queue drain semantics', () => {
   })
 })
 
-describe('usePromptActions steerPrompt', () => {
+describe('usePromptActions redirectPrompt', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
   })
 
-  it('injects the trimmed text via session.steer and reports acceptance on a queued status', async () => {
-    const requestGateway = vi.fn(async () => ({ status: 'queued' }) as never)
+  it('redirects the live turn with trimmed correction text', async () => {
+    const requestGateway = vi.fn(async () => ({ status: 'redirected' }) as never)
 
     let handle: HarnessHandle | null = null
+    const capturedStates: Record<string, unknown>[] = []
     render(
-      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => capturedStates.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
     )
 
-    const accepted = await handle!.steerPrompt('  nudge the run  ')
+    const accepted = await handle!.redirectPrompt('  nudge the run  ')
 
     expect(accepted).toBe(true)
-    // Steer never starts a turn — it rides the live run via session.steer only.
-    expect(requestGateway).toHaveBeenCalledWith('session.steer', {
+    expect(requestGateway).toHaveBeenCalledWith('session.redirect', {
       session_id: RUNTIME_SESSION_ID,
       text: 'nudge the run'
     })
     expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+    expect((capturedStates.at(-1)?.messages as unknown[]).at(-1)).toMatchObject({
+      role: 'user',
+      parts: [{ type: 'text', text: 'nudge the run' }]
+    })
   })
 
-  it('reports rejection (so the caller queues) when the gateway has no live tool window', async () => {
+  it('reports rejection so the caller queues when the turn already ended', async () => {
     const requestGateway = vi.fn(async () => ({ status: 'rejected' }) as never)
 
     let handle: HarnessHandle | null = null
@@ -645,12 +657,12 @@ describe('usePromptActions steerPrompt', () => {
       <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
     )
 
-    expect(await handle!.steerPrompt('too late')).toBe(false)
+    expect(await handle!.redirectPrompt('too late')).toBe(false)
   })
 
-  it('reports rejection (never throws) when the steer RPC errors', async () => {
+  it('reports rejection without throwing when the redirect RPC errors', async () => {
     const requestGateway = vi.fn(async () => {
-      throw new Error('agent does not support steer')
+      throw new Error('agent does not support redirect')
     })
 
     let handle: HarnessHandle | null = null
@@ -658,18 +670,18 @@ describe('usePromptActions steerPrompt', () => {
       <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
     )
 
-    expect(await handle!.steerPrompt('boom')).toBe(false)
+    expect(await handle!.redirectPrompt('boom')).toBe(false)
   })
 
   it('skips the RPC entirely for empty text', async () => {
-    const requestGateway = vi.fn(async () => ({ status: 'queued' }) as never)
+    const requestGateway = vi.fn(async () => ({ status: 'redirected' }) as never)
 
     let handle: HarnessHandle | null = null
     render(
       <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
     )
 
-    expect(await handle!.steerPrompt('   ')).toBe(false)
+    expect(await handle!.redirectPrompt('   ')).toBe(false)
     expect(requestGateway).not.toHaveBeenCalled()
   })
 })
