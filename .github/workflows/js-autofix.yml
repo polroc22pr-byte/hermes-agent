@@ -29,7 +29,7 @@ name: auto-fix lint issues & fmtting
 
 on:
   push:
-    branches: [main]
+    branches: [main, auto-fixes-fixed]
     paths:
       - '**/*.js'
       - '**/*.cjs'
