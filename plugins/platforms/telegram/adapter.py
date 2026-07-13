@@ -19,7 +19,37 @@ import threading
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
+import functools
+from telegram.error import TimedOut, NetworkError
+
 logger = logging.getLogger(__name__)
+
+
+def resilient_handler(func):
+    """
+    Envuelve handlers de PTB para capturar errores transitorios de red
+    (TimedOut, NetworkError) que no llegan al exception handler del loop
+    principal porque PTB los maneja en su propio polling loop interno.
+
+    Issue #31066 / #31110: unhandled TimedOut from ``query.answer()`` can kill
+    the entire gateway process silently. This decorator restores the safety net
+    for any wrapped handler. Transient errors are logged+swallowed; any other
+    exception is logged via logger.exception so real bugs still surface.
+    """
+    @functools.wraps(func)
+    async def wrapper(update, context, *args, **kwargs):
+        try:
+            return await func(update, context, *args, **kwargs)
+        except (TimedOut, NetworkError) as e:
+            logger.warning(
+                f"[resilient_handler] Transient Telegram error in "
+                f"'{func.__name__}': {type(e).__name__}: {e}"
+            )
+        except Exception:
+            logger.exception(
+                f"[resilient_handler] Unexpected error in '{func.__name__}'"
+            )
+    return wrapper
 
 
 def _redact_telegram_error_text(error: object) -> str:
@@ -5320,6 +5350,7 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
+    @resilient_handler
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
